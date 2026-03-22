@@ -1,0 +1,184 @@
+version: "3.8"
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  TSU Skills — полный стек                                    ║
+# ║  Запуск: docker compose up --build                           ║
+# ║  Единая точка входа: http://localhost:8000                   ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+x-common-pg: &pg-defaults
+  image: postgres:16-alpine
+  restart: unless-stopped
+  networks:
+    - tsuskills
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+
+services:
+
+  # ════════════════════════════════════════
+  # DATABASES
+  # ════════════════════════════════════════
+
+  postgres-users:
+    <<: *pg-defaults
+    container_name: tsu-pg-users
+    environment:
+      POSTGRES_DB: tsuskills_users
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-users-data:/var/lib/postgresql/data
+
+  postgres-vacancies:
+    <<: *pg-defaults
+    container_name: tsu-pg-vacancies
+    environment:
+      POSTGRES_DB: tsuskills_vacancies
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg-vacancies-data:/var/lib/postgresql/data
+
+  postgres-skills:
+    <<: *pg-defaults
+    container_name: tsu-pg-skills
+    environment:
+      POSTGRES_DB: tsuskills_skills
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg-skills-data:/var/lib/postgresql/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: tsu-opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "DISABLE_SECURITY_PLUGIN=true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - tsuskills
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.14.0
+    container_name: tsu-opensearch-dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=http://opensearch:9200
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - tsuskills
+
+  # ════════════════════════════════════════
+  # BACKEND SERVICES
+  # ════════════════════════════════════════
+
+  users-service:
+    build:
+      context: ./users
+      dockerfile: docker/Dockerfile
+    container_name: tsu-users
+    restart: unless-stopped
+    environment:
+      CONFIG_FILE_PATH: config/config.docker.yaml
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+    networks:
+      - tsuskills
+
+  dbmanager-service:
+    build:
+      context: ./dbmanager
+      dockerfile: docker/Dockerfile
+    container_name: tsu-dbmanager
+    restart: unless-stopped
+    environment:
+      CONFIG_FILE_PATH: config/config.docker.yaml
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-vacancies:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    networks:
+      - tsuskills
+
+  skills-service:
+    build:
+      context: ./skills
+      dockerfile: docker/Dockerfile
+    container_name: tsu-skills
+    restart: unless-stopped
+    environment:
+      CONFIG_FILE_PATH: config/config.docker.yaml
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-skills:
+        condition: service_healthy
+    networks:
+      - tsuskills
+
+  # ════════════════════════════════════════
+  # API GATEWAY
+  # ════════════════════════════════════════
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: docker/Dockerfile
+    container_name: tsu-gateway
+    restart: unless-stopped
+    environment:
+      CONFIG_FILE_PATH: config/config.docker.yaml
+    ports:
+      - "8000:8000"
+    depends_on:
+      - users-service
+      - dbmanager-service
+      - skills-service
+    networks:
+      - tsuskills
+
+volumes:
+  pg-users-data:
+  pg-vacancies-data:
+  pg-skills-data:
+  opensearch-data:
+
+networks:
+  tsuskills:
+    driver: bridge

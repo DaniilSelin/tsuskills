@@ -7,3 +7,9 @@
 [submodule "frontend"]
 	path = frontend
 	url = https://github.com/Artvell3000/tsu_skills
+[submodule "gateway"]
+	path = gateway
+	url = git@github.com:DaniilSelin/tsuskills-gateway.git
+[submodule "skills"]
+	path = skills
+	url = git@github.com:DaniilSelin/tsuskills-skills.git

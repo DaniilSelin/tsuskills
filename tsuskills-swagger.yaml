@@ -1,0 +1,1957 @@
+openapi: 3.0.3
+info:
+  title: TSU Skills API
+  description: |
+    API-документация платформы **TSU Skills** — университетская платформа для поиска вакансий, стажировок и подбора кандидатов по навыкам.
+
+    ## Архитектура
+
+    Бэкенд построен на **Parse Server** (хостинг Back4App). Взаимодействие происходит через:
+    - **REST API Parse Server** — CRUD-операции над классами (Users, Vacancy, Resume, Application, Organization, Skills)
+    - **Cloud Functions** — серверная бизнес-логика (получение роли, вакансий текущего пользователя, откликов и т.д.)
+
+    ## Роли пользователей
+
+    | Роль | Описание |
+    |------|----------|
+    | `guest` | Неавторизованный — доступны только регистрация, вход и лендинг |
+    | `user` | Студент/соискатель — поиск вакансий, создание резюме, отклики |
+    | `organizator` | Работодатель/директор — управление организацией и вакансиями, просмотр откликов |
+
+    ## Аутентификация
+
+    Используется сессионная модель Parse Server. После login/signUp возвращается `sessionToken`,
+    который передаётся в заголовке `X-Parse-Session-Token` для всех авторизованных запросов.
+
+  version: 1.0.0
+  contact:
+    name: Artvell3000 / DaniilSelin
+    url: https://github.com/DaniilSelin/tsuskills
+
+servers:
+  - url: https://parseapi.back4app.com
+    description: Parse Server (Back4App) — production
+
+# ═══════════════════════════════════════════════
+# SECURITY
+# ═══════════════════════════════════════════════
+security:
+  - ParseAuth: []
+
+components:
+  securitySchemes:
+    ParseAuth:
+      type: apiKey
+      in: header
+      name: X-Parse-Session-Token
+      description: |
+        Сессионный токен Parse Server, полученный при login или signUp.
+        Передаётся во всех запросах, требующих авторизации.
+
+  parameters:
+    ParseAppId:
+      name: X-Parse-Application-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Application ID приложения на Back4App
+      example: "J1Gnjccs1LS3pviCVpHpRPyIaJVKKSQViAhEc4Ve"
+
+    ParseClientKey:
+      name: X-Parse-Client-Key
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Client Key приложения на Back4App
+      example: "94RSnKKoTGNAJBeyawLcctNgEQyZ3V7B7d5K8ATV"
+
+  # ═══════════════════════════════════════════
+  # SCHEMAS
+  # ═══════════════════════════════════════════
+  schemas:
+
+    # ── Parse Server Common ──────────────────
+    ParsePointer:
+      type: object
+      description: Указатель на объект другого класса (Parse Pointer)
+      required: [__type, className, objectId]
+      properties:
+        __type:
+          type: string
+          enum: [Pointer]
+        className:
+          type: string
+          example: "_User"
+        objectId:
+          type: string
+          example: "sHqRk2a4il"
+
+    ParseFile:
+      type: object
+      description: Файл, загруженный в Parse Server (например, фото профиля)
+      required: [__type, name, url]
+      properties:
+        __type:
+          type: string
+          enum: [File]
+        name:
+          type: string
+          example: "tfss-a1b2c3d4-profile.jpg"
+        url:
+          type: string
+          format: uri
+          example: "https://parsefiles.back4app.com/app/tfss-a1b2c3d4-profile.jpg"
+
+    ParseACL:
+      type: object
+      description: |
+        Access Control List — определяет, кто может читать/писать объект.
+        Ключи — objectId пользователей или `*` (публичный доступ).
+      additionalProperties:
+        type: object
+        properties:
+          read:
+            type: boolean
+          write:
+            type: boolean
+      example:
+        "sHqRk2a4il": { read: true, write: true }
+        "*": { read: true }
+
+    ErrorResponse:
+      type: object
+      description: Стандартный ответ Parse Server при ошибке
+      required: [code, error]
+      properties:
+        code:
+          type: integer
+          description: |
+            Код ошибки Parse Server:
+            - 101: Неверный логин/пароль
+            - 119: Операция запрещена (ACL)
+            - 141: Ошибка Cloud Function
+            - 142: Ошибка валидации
+            - 202: Имя пользователя уже занято
+            - 203: Email уже используется
+            - 209: Невалидный session token
+          example: 101
+        error:
+          type: string
+          example: "Invalid username/password."
+
+    # ── User ─────────────────────────────────
+    UserDto:
+      type: object
+      description: |
+        Пользователь платформы. Хранится в классе `_User` Parse Server.
+        Поддерживает фото профиля, контактные данные (телефон, Telegram, VK).
+      required: [objectId, createdAt, updatedAt, username, email]
+      properties:
+        objectId:
+          type: string
+          description: Уникальный ID пользователя
+          example: "sHqRk2a4il"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2025-06-15T10:30:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2025-08-20T14:15:00.000Z"
+        username:
+          type: string
+          description: Уникальное имя пользователя (логин)
+          example: "ivan_petrov"
+        email:
+          type: string
+          format: email
+          description: Email пользователя
+          example: "ivan@tsu.ru"
+        vk_ref:
+          type: string
+          nullable: true
+          description: Ссылка на профиль ВКонтакте
+          example: "https://vk.com/ivan_petrov"
+        telegram_ref:
+          type: string
+          nullable: true
+          description: Telegram username или ссылка
+          example: "@ivan_petrov"
+        phone:
+          type: string
+          nullable: true
+          description: Номер телефона
+          example: "+7 999 123-45-67"
+        profile_photo:
+          $ref: '#/components/schemas/ParseFile'
+        sessionToken:
+          type: string
+          description: Сессионный токен (возвращается только при login/signUp)
+          example: "r:pnktnjyb996sEbkc3MGXGf0LB"
+
+    # ── Skill ────────────────────────────────
+    SkillDto:
+      type: object
+      description: |
+        Навык / компетенция. Хранится в классе `Skills`.
+        Привязывается к резюме и вакансиям через массив указателей (skillPointers).
+      required: [objectId, name, createdAt, updatedAt, ACL]
+      properties:
+        className:
+          type: string
+          default: "Skills"
+        objectId:
+          type: string
+          description: Уникальный ID навыка
+          example: "abc123def"
+        name:
+          type: string
+          description: Название навыка
+          example: "Flutter"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        ACL:
+          $ref: '#/components/schemas/ParseACL'
+
+    SkillArrayDto:
+      type: object
+      description: Массив навыков, вложенных в объект (skillPointers)
+      properties:
+        className:
+          type: string
+          default: "ParseArray"
+        estimatedArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillDto'
+
+    # ── Organization ─────────────────────────
+    OrganizationDto:
+      type: object
+      description: |
+        Организация / компания. Хранится в классе `Organization`.
+        Привязана к пользователю-директору (роль `organizator`) через поле `director`.
+      required: [objectId, createdAt, updatedAt, name, aboutUs]
+      properties:
+        objectId:
+          type: string
+          example: "org123abc"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        name:
+          type: string
+          description: Название организации
+          example: "ТГУ Лаборатория ИИ"
+        aboutUs:
+          type: string
+          description: Описание организации
+          example: "Лаборатория искусственного интеллекта при Томском государственном университете"
+        director:
+          $ref: '#/components/schemas/ParsePointer'
+        ACL:
+          $ref: '#/components/schemas/ParseACL'
+
+    OrganizationCompanion:
+      type: object
+      description: Данные для создания/обновления организации
+      properties:
+        objectId:
+          type: string
+          description: ID организации (только для обновления)
+        name:
+          type: string
+          description: Название организации
+          example: "Новая Организация"
+        aboutUs:
+          type: string
+          description: Описание организации
+          example: "Описание деятельности организации"
+        directorId:
+          type: string
+          description: ID пользователя-директора
+          example: "sHqRk2a4il"
+
+    # ── Vacancy ──────────────────────────────
+    VacancyDto:
+      type: object
+      description: |
+        Вакансия. Хранится в классе `Vacancy`.
+        Связана с организацией (organization) и набором навыков (skillPointers).
+      required: [objectId, createdAt, updatedAt, title, description, organization, skillPointers]
+      properties:
+        objectId:
+          type: string
+          example: "vac456xyz"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        title:
+          type: string
+          description: Название вакансии
+          example: "Flutter-разработчик"
+        description:
+          type: string
+          description: Полное описание вакансии, требования и условия
+          example: "Ищем Flutter-разработчика для мобильного приложения..."
+        organization:
+          $ref: '#/components/schemas/OrganizationDto'
+        skillPointers:
+          $ref: '#/components/schemas/SkillArrayDto'
+
+    VacancyCompanion:
+      type: object
+      description: Данные для создания/обновления вакансии
+      properties:
+        objectId:
+          type: string
+          description: ID вакансии (только для обновления)
+        title:
+          type: string
+          description: Название вакансии
+          example: "Go Backend Developer"
+        description:
+          type: string
+          description: Описание вакансии
+          example: "Разработка микросервисов на Go..."
+        skillIds:
+          type: array
+          items:
+            type: string
+          description: Массив objectId навыков
+          example: ["abc123def", "ghi456jkl"]
+        organizationId:
+          type: string
+          description: ID организации-работодателя
+          example: "org123abc"
+
+    # ── Resume ───────────────────────────────
+    ResumeDto:
+      type: object
+      description: |
+        Резюме соискателя. Хранится в классе `Resume`.
+        Привязано к пользователю (user) и содержит навыки (skillPointers).
+      required: [objectId, createdAt, updatedAt, name, description, aboutMe, skills, skillPointers]
+      properties:
+        objectId:
+          type: string
+          example: "res789mno"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        name:
+          type: string
+          description: Название резюме
+          example: "Frontend-разработчик"
+        description:
+          type: string
+          description: Описание опыта и компетенций
+          example: "2 года опыта во Flutter, работал над мобильными приложениями..."
+        aboutMe:
+          type: string
+          description: Секция «О себе»
+          example: "Студент 4 курса ТГУ, увлекаюсь мобильной разработкой"
+        user:
+          $ref: '#/components/schemas/UserDto'
+        skills:
+          type: object
+          description: Relation на класс Skills (метаданные связи)
+          properties:
+            className:
+              type: string
+              default: "ParseRelation"
+            targetClass:
+              type: string
+              default: "Skills"
+        skillPointers:
+          $ref: '#/components/schemas/SkillArrayDto'
+        ACL:
+          $ref: '#/components/schemas/ParseACL'
+
+    ResumeCompanion:
+      type: object
+      description: Данные для создания/обновления резюме
+      properties:
+        id:
+          type: string
+          description: ID резюме (только для обновления)
+        name:
+          type: string
+          description: Название резюме
+          example: "Junior Go Developer"
+        description:
+          type: string
+          description: Описание опыта
+          example: "Учусь на 3 курсе, прошёл стажировку..."
+        aboutMe:
+          type: string
+          description: О себе
+          example: "Активный, ответственный, люблю программировать"
+        skillIds:
+          type: array
+          items:
+            type: string
+          description: Массив objectId навыков
+          example: ["abc123def"]
+
+    # ── Application (Отклик) ─────────────────
+    ApplicationDto:
+      type: object
+      description: |
+        Отклик на вакансию. Хранится в классе `Application`.
+        Связывает резюме (resume) и вакансию (vacancy).
+        Создаётся соискателем, просматривается работодателем.
+      required: [objectId, createdAt, updatedAt, resume, vacancy]
+      properties:
+        className:
+          type: string
+          default: "Application"
+        objectId:
+          type: string
+          example: "app321qrs"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        resume:
+          $ref: '#/components/schemas/ResumeDto'
+        vacancy:
+          $ref: '#/components/schemas/VacancyDto'
+
+    ApplicationCompanion:
+      type: object
+      description: Данные для создания отклика
+      required: [resumeId, vacancyId]
+      properties:
+        resumeId:
+          type: string
+          description: ID резюме, с которым откликается соискатель
+          example: "res789mno"
+        vacancyId:
+          type: string
+          description: ID вакансии, на которую откликается
+          example: "vac456xyz"
+
+    # ── User Role ────────────────────────────
+    UserRoleDto:
+      type: object
+      description: Роль текущего пользователя (user, organizator)
+      required: [objectId, name]
+      properties:
+        objectId:
+          type: string
+          example: "role001"
+        name:
+          type: string
+          description: "Название роли: user или organizator"
+          enum: [user, organizator]
+          example: "user"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ── Cloud Function Wrapper ───────────────
+    CloudFunctionRequest:
+      type: object
+      description: Общий формат вызова Cloud Function
+      properties:
+        _method:
+          type: string
+        _ApplicationId:
+          type: string
+        _SessionToken:
+          type: string
+
+    CloudFunctionResponse:
+      type: object
+      description: Общий формат ответа Cloud Function
+      properties:
+        result:
+          description: Результат выполнения функции (тип зависит от функции)
+
+# ═══════════════════════════════════════════════
+# PATHS (ENDPOINTS)
+# ═══════════════════════════════════════════════
+tags:
+  - name: Auth
+    description: |
+      Регистрация, авторизация, восстановление пароля, выход.
+      Используются встроенные эндпоинты Parse Server для класса `_User`.
+  - name: Users
+    description: |
+      Управление профилем текущего пользователя — получение данных, обновление
+      контактной информации, загрузка фото профиля, выход из системы.
+  - name: UserRoles
+    description: |
+      Получение роли текущего пользователя через Cloud Function.
+      Определяет стратегию приложения (user / organizator / guest).
+  - name: Vacancies
+    description: |
+      CRUD-операции с вакансиями. Поиск по названию и навыкам.
+      Работодатели создают/редактируют/удаляют свои вакансии,
+      соискатели просматривают и ищут подходящие.
+  - name: Resumes
+    description: |
+      CRUD-операции с резюме. Пользователь может иметь несколько резюме.
+      При отклике выбирается конкретное резюме из списка доступных.
+  - name: Applications
+    description: |
+      Отклики на вакансии. Соискатель создаёт отклик, привязывая резюме к вакансии.
+      Работодатель просматривает отклики на свои вакансии.
+  - name: Organizations
+    description: |
+      Управление организацией. У каждого работодателя (organizator) одна организация.
+      Организация привязывается к вакансиям.
+  - name: Skills
+    description: |
+      Справочник навыков. Поиск по подстроке, создание новых навыков.
+      Навыки привязываются к резюме и вакансиям.
+
+paths:
+
+  # ═══════════════════════════════════════════
+  # AUTH
+  # ═══════════════════════════════════════════
+
+  /users:
+    post:
+      tags: [Auth]
+      summary: Регистрация нового пользователя (Sign Up)
+      operationId: signUp
+      description: |
+        Создаёт нового пользователя в системе. Возвращает объект пользователя
+        с `sessionToken`, который используется для авторизации последующих запросов.
+
+        **Доступ:** без авторизации (guest)
+
+        **Валидация:**
+        - `username` — уникальный, обязательный
+        - `password` — обязательный
+        - `email` — уникальный, обязательный, формат email
+
+        **Возможные ошибки:**
+        - `202` — Username уже занят
+        - `203` — Email уже используется
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, email]
+              properties:
+                username:
+                  type: string
+                  description: Уникальное имя пользователя (логин)
+                  example: "ivan_petrov"
+                password:
+                  type: string
+                  format: password
+                  description: Пароль (минимум 6 символов)
+                  example: "mySecurePass123"
+                email:
+                  type: string
+                  format: email
+                  description: Email пользователя
+                  example: "ivan@tsu.ru"
+      responses:
+        '201':
+          description: Пользователь успешно создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDto'
+              example:
+                objectId: "sHqRk2a4il"
+                username: "ivan_petrov"
+                email: "ivan@tsu.ru"
+                createdAt: "2025-06-15T10:30:00.000Z"
+                updatedAt: "2025-06-15T10:30:00.000Z"
+                sessionToken: "r:pnktnjyb996sEbkc3MGXGf0LB"
+        '400':
+          description: Ошибка валидации или дубликат
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /login:
+    get:
+      tags: [Auth]
+      summary: Авторизация (Login)
+      operationId: login
+      description: |
+        Аутентифицирует пользователя по username и password.
+        Возвращает объект пользователя с `sessionToken`.
+
+        **Доступ:** без авторизации (guest)
+
+        **Возможные ошибки:**
+        - `101` — Неверный логин/пароль
+        - `200` — Username обязателен
+        - `201` — Password обязателен
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "ivan_petrov"
+        - name: password
+          in: query
+          required: true
+          schema:
+            type: string
+            format: password
+          example: "mySecurePass123"
+      responses:
+        '200':
+          description: Успешная авторизация
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDto'
+              example:
+                objectId: "sHqRk2a4il"
+                username: "ivan_petrov"
+                email: "ivan@tsu.ru"
+                sessionToken: "r:pnktnjyb996sEbkc3MGXGf0LB"
+                createdAt: "2025-06-15T10:30:00.000Z"
+                updatedAt: "2025-08-20T14:15:00.000Z"
+        '404':
+          description: Неверные учётные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 101
+                error: "Invalid username/password."
+
+  /requestPasswordReset:
+    post:
+      tags: [Auth]
+      summary: Восстановление пароля
+      operationId: requestPasswordReset
+      description: |
+        Отправляет email со ссылкой для сброса пароля.
+
+        **Доступ:** без авторизации (guest)
+
+        **Возможные ошибки:**
+        - `205` — Email не найден в базе
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "ivan@tsu.ru"
+      responses:
+        '200':
+          description: Письмо для сброса пароля отправлено
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+        '400':
+          description: Email не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /logout:
+    post:
+      tags: [Auth]
+      summary: Выход из системы (Logout)
+      operationId: logout
+      description: |
+        Завершает текущую сессию пользователя, инвалидируя sessionToken.
+
+        **Доступ:** авторизованные пользователи (user, organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      responses:
+        '200':
+          description: Сессия успешно завершена
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+        '209':
+          description: Невалидный session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ═══════════════════════════════════════════
+  # USERS (Profile)
+  # ═══════════════════════════════════════════
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Получить профиль текущего пользователя
+      operationId: getCurrentUser
+      description: |
+        Возвращает данные авторизованного пользователя по sessionToken.
+
+        **Доступ:** авторизованные пользователи (user, organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      responses:
+        '200':
+          description: Данные текущего пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDto'
+        '209':
+          description: Невалидный session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{objectId}:
+    put:
+      tags: [Users]
+      summary: Обновить профиль пользователя
+      operationId: updateUser
+      description: |
+        Обновляет данные пользователя. Можно обновлять частично — отправлять
+        только изменённые поля.
+
+        **Обновляемые поля:**
+        - `username` — имя пользователя
+        - `email` — электронная почта
+        - `vk_ref` — ссылка на ВКонтакте
+        - `telegram_ref` — Telegram username
+        - `phone` — номер телефона
+        - `profile_photo` — фото профиля (ParseFile, загружается отдельно)
+
+        **Доступ:** только владелец профиля
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ID пользователя
+          example: "sHqRk2a4il"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  example: "ivan_updated"
+                email:
+                  type: string
+                  format: email
+                  example: "ivan_new@tsu.ru"
+                vk_ref:
+                  type: string
+                  example: "https://vk.com/ivan_petrov"
+                telegram_ref:
+                  type: string
+                  example: "@ivan_petrov"
+                phone:
+                  type: string
+                  example: "+7 999 123-45-67"
+                profile_photo:
+                  $ref: '#/components/schemas/ParseFile'
+      responses:
+        '200':
+          description: Профиль обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDto'
+        '206':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /files/{filename}:
+    post:
+      tags: [Users]
+      summary: Загрузить файл (фото профиля)
+      operationId: uploadFile
+      description: |
+        Загружает файл на Parse Server. Возвращает ParseFile с URL.
+        Используется для загрузки фото профиля перед обновлением пользователя.
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile.jpg"
+        - name: Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+          example: "image/jpeg"
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema:
+              type: string
+              format: binary
+          image/png:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Файл загружен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    example: "https://parsefiles.back4app.com/app/tfss-profile.jpg"
+                  name:
+                    type: string
+                    example: "tfss-a1b2c3d4-profile.jpg"
+
+  # ═══════════════════════════════════════════
+  # USER ROLES (Cloud Function)
+  # ═══════════════════════════════════════════
+
+  /functions/getCurrentUserRole:
+    post:
+      tags: [UserRoles]
+      summary: Получить роль текущего пользователя
+      operationId: getCurrentUserRole
+      description: |
+        **Cloud Function.** Возвращает роль текущего авторизованного пользователя.
+        Определяет, какой интерфейс показывать: user (соискатель) или organizator (работодатель).
+
+        Если пользователь не авторизован — роль `guest` (определяется на клиенте).
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              example: {}
+      responses:
+        '200':
+          description: Роль пользователя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: '#/components/schemas/UserRoleDto'
+              example:
+                result:
+                  objectId: "role001"
+                  name: "user"
+
+  # ═══════════════════════════════════════════
+  # VACANCIES
+  # ═══════════════════════════════════════════
+
+  /classes/Vacancy:
+    get:
+      tags: [Vacancies]
+      summary: Поиск вакансий (с фильтрами)
+      operationId: searchVacancies
+      description: |
+        Поиск вакансий по названию и/или навыкам.
+        Использует Parse Query с `include` для подгрузки связанных объектов.
+
+        **Фильтрация:**
+        - По названию — `whereContains('title', name)`, регистронезависимый
+        - По навыкам — `whereMatchesQuery('skillRelation', skillsQuery)`
+
+        **Сортировка:** по дате создания (новые первыми)
+
+        **Подгрузка:** organization, skillPointers
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: where
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            JSON-фильтр Parse Query. Примеры:
+            - По названию: `{"title":{"$regex":"flutter","$options":"i"}}`
+            - По навыкам: `{"skillRelation":{"$inQuery":{"where":{"objectId":{"$in":["abc123"]}},"className":"Skills"}}}`
+          example: '{"title":{"$regex":"flutter","$options":"i"}}'
+        - name: include
+          in: query
+          schema:
+            type: string
+          example: "organization,skillPointers"
+        - name: order
+          in: query
+          schema:
+            type: string
+          example: "-createdAt"
+      responses:
+        '200':
+          description: Список вакансий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VacancyDto'
+
+  /classes/Vacancy/{objectId}:
+    get:
+      tags: [Vacancies]
+      summary: Получить вакансию по ID
+      operationId: getVacancy
+      description: |
+        Возвращает детальную информацию о вакансии, включая организацию
+        (с данными директора) и привязанные навыки.
+
+        **Подгрузка:** organization, organization.director, skillPointers
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "vac456xyz"
+        - name: include
+          in: query
+          schema:
+            type: string
+          example: "organization,organization.director,skillPointers"
+      responses:
+        '200':
+          description: Данные вакансии
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VacancyDto'
+        '101':
+          description: Вакансия не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags: [Vacancies]
+      summary: Обновить вакансию
+      operationId: updateVacancy
+      description: |
+        Обновляет поля существующей вакансии. Можно обновлять частично.
+
+        **Обновляемые поля:** title, description, organization, skillPointers
+
+        **Доступ:** владелец вакансии (organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VacancyCompanion'
+      responses:
+        '200':
+          description: Вакансия обновлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedAt:
+                    type: string
+                    format: date-time
+
+    delete:
+      tags: [Vacancies]
+      summary: Удалить вакансию
+      operationId: deleteVacancy
+      description: |
+        Удаляет вакансию по ID.
+
+        **Доступ:** владелец вакансии (organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Вакансия удалена
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+
+  /functions/createVacancy:
+    post:
+      tags: [Vacancies]
+      summary: Создать вакансию (Cloud Function)
+      operationId: createVacancy
+      description: |
+        **Cloud Function.** Создаёт новую вакансию от имени текущего пользователя.
+
+        **Валидация:**
+        - `title` — обязательное, не пустое
+        - `description` — обязательное, не пустое
+
+        **Доступ:** organizator
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VacancyCompanion'
+            example:
+              title: "Flutter-разработчик"
+              description: "Ищем разработчика мобильных приложений на Flutter"
+              skillIds: ["abc123def", "ghi456jkl"]
+              organizationId: "org123abc"
+      responses:
+        '200':
+          description: Вакансия создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+
+  /functions/getMyVacancies:
+    post:
+      tags: [Vacancies]
+      summary: Мои вакансии (Cloud Function)
+      operationId: getMyVacancies
+      description: |
+        **Cloud Function.** Возвращает все вакансии текущего пользователя-работодателя.
+
+        **Доступ:** organizator
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              example: {}
+      responses:
+        '200':
+          description: Список вакансий текущего работодателя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VacancyDto'
+
+  /functions/searchMyVacancies:
+    post:
+      tags: [Vacancies]
+      summary: Поиск среди моих вакансий (Cloud Function)
+      operationId: searchMyVacancies
+      description: |
+        **Cloud Function.** Поиск среди вакансий текущего работодателя с фильтрацией.
+
+        **Доступ:** organizator
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VacancyCompanion'
+      responses:
+        '200':
+          description: Отфильтрованный список вакансий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VacancyDto'
+
+  /functions/searchVacancies:
+    post:
+      tags: [Vacancies]
+      summary: Поиск вакансий (Cloud Function)
+      operationId: searchVacanciesCloudFunction
+      description: |
+        **Cloud Function.** Альтернативный эндпоинт для поиска вакансий
+        через серверную логику.
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Фильтр по названию
+                skillIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Фильтр по ID навыков
+      responses:
+        '200':
+          description: Список вакансий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VacancyDto'
+
+  # ═══════════════════════════════════════════
+  # RESUMES
+  # ═══════════════════════════════════════════
+
+  /classes/Resume:
+    get:
+      tags: [Resumes]
+      summary: Получить резюме текущего пользователя
+      operationId: fetchMyResumes
+      description: |
+        Возвращает все резюме текущего авторизованного пользователя.
+
+        **Фильтрация:** `where={"user":{"__type":"Pointer","className":"_User","objectId":"<currentUserId>"}}`
+
+        **Подгрузка:** user, skillPointers
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: where
+          in: query
+          schema:
+            type: string
+          example: '{"user":{"__type":"Pointer","className":"_User","objectId":"sHqRk2a4il"}}'
+        - name: include
+          in: query
+          schema:
+            type: string
+          example: "user,skillPointers"
+      responses:
+        '200':
+          description: Список резюме
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ResumeDto'
+
+    post:
+      tags: [Resumes]
+      summary: Создать резюме
+      operationId: createResume
+      description: |
+        Создаёт новое резюме для текущего пользователя.
+
+        **Обязательные поля:** name, description, aboutMe
+
+        **Навыки:** передаются как массив указателей (skillPointers)
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, description, aboutMe, user]
+              properties:
+                name:
+                  type: string
+                  description: Название резюме
+                  example: "Frontend-разработчик"
+                description:
+                  type: string
+                  description: Описание опыта
+                  example: "2 года опыта во Flutter..."
+                aboutMe:
+                  type: string
+                  description: О себе
+                  example: "Студент 4 курса ТГУ"
+                user:
+                  $ref: '#/components/schemas/ParsePointer'
+                skillPointers:
+                  type: array
+                  description: Массив указателей на навыки
+                  items:
+                    $ref: '#/components/schemas/ParsePointer'
+      responses:
+        '201':
+          description: Резюме создано
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  objectId:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+
+  /classes/Resume/{objectId}:
+    get:
+      tags: [Resumes]
+      summary: Получить резюме по ID
+      operationId: fetchResume
+      description: |
+        Возвращает детальную информацию о резюме с подгруженными навыками и данными пользователя.
+
+        **Подгрузка:** user, skillPointers
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include
+          in: query
+          schema:
+            type: string
+          example: "user,skillPointers"
+      responses:
+        '200':
+          description: Данные резюме
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeDto'
+        '101':
+          description: Резюме не найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags: [Resumes]
+      summary: Обновить резюме
+      operationId: updateResume
+      description: |
+        Обновляет существующее резюме. Можно обновлять частично.
+
+        **Обновляемые поля:** name, description, aboutMe, skillPointers
+
+        **Доступ:** владелец резюме (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                aboutMe:
+                  type: string
+                skillPointers:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ParsePointer'
+      responses:
+        '200':
+          description: Резюме обновлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedAt:
+                    type: string
+                    format: date-time
+
+    delete:
+      tags: [Resumes]
+      summary: Удалить резюме
+      operationId: deleteResume
+      description: |
+        Удаляет резюме по ID.
+
+        **Доступ:** владелец резюме (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Резюме удалено
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+
+  /functions/getAvailableResumesForVacancy:
+    post:
+      tags: [Resumes]
+      summary: Доступные резюме для отклика на вакансию (Cloud Function)
+      operationId: getAvailableResumesForVacancy
+      description: |
+        **Cloud Function.** Возвращает список резюме текущего пользователя,
+        которыми он ещё не откликался на данную вакансию.
+
+        Используется при создании отклика — чтобы показать только те резюме,
+        которыми пользователь ещё не откликался.
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vacancyId]
+              properties:
+                vacancyId:
+                  type: string
+                  description: ID вакансии
+                  example: "vac456xyz"
+      responses:
+        '200':
+          description: Список доступных резюме
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ResumeDto'
+
+  # ═══════════════════════════════════════════
+  # APPLICATIONS (Отклики)
+  # ═══════════════════════════════════════════
+
+  /classes/Application:
+    post:
+      tags: [Applications]
+      summary: Создать отклик на вакансию
+      operationId: createApplication
+      description: |
+        Создаёт отклик, связывающий резюме соискателя с вакансией.
+        Поля vacancy и resume передаются как Parse Pointers.
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vacancy, resume]
+              properties:
+                vacancy:
+                  $ref: '#/components/schemas/ParsePointer'
+                resume:
+                  $ref: '#/components/schemas/ParsePointer'
+            example:
+              vacancy:
+                __type: "Pointer"
+                className: "Vacancy"
+                objectId: "vac456xyz"
+              resume:
+                __type: "Pointer"
+                className: "Resume"
+                objectId: "res789mno"
+      responses:
+        '201':
+          description: Отклик создан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  objectId:
+                    type: string
+                    example: "app321qrs"
+                  createdAt:
+                    type: string
+                    format: date-time
+
+  /functions/fetchMyApplications:
+    post:
+      tags: [Applications]
+      summary: Мои отклики (Cloud Function)
+      operationId: fetchMyApplications
+      description: |
+        **Cloud Function.** Возвращает все отклики текущего пользователя
+        с данными вакансий и резюме.
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              example: {}
+      responses:
+        '200':
+          description: Список откликов пользователя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApplicationDto'
+
+  /functions/getMyApplicationById:
+    post:
+      tags: [Applications]
+      summary: Получить мой отклик по ID (Cloud Function)
+      operationId: getMyApplicationById
+      description: |
+        **Cloud Function.** Возвращает детальную информацию об отклике
+        текущего пользователя по его ID.
+
+        **Доступ:** авторизованные пользователи (user)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [applicationId]
+              properties:
+                applicationId:
+                  type: string
+                  example: "app321qrs"
+      responses:
+        '200':
+          description: Данные отклика
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: '#/components/schemas/ApplicationDto'
+
+  /functions/getApplicationsByVacancy:
+    post:
+      tags: [Applications]
+      summary: Отклики на вакансию (Cloud Function)
+      operationId: getApplicationsByVacancy
+      description: |
+        **Cloud Function.** Возвращает все отклики на указанную вакансию.
+        Используется работодателем для просмотра кандидатов.
+
+        **Доступ:** organizator (владелец вакансии)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vacancyId]
+              properties:
+                vacancyId:
+                  type: string
+                  description: ID вакансии
+                  example: "vac456xyz"
+      responses:
+        '200':
+          description: Список откликов на вакансию
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApplicationDto'
+
+  # ═══════════════════════════════════════════
+  # ORGANIZATIONS
+  # ═══════════════════════════════════════════
+
+  /classes/Organization:
+    get:
+      tags: [Organizations]
+      summary: Список организаций
+      operationId: getOrganizations
+      description: |
+        Возвращает список организаций с пагинацией.
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+          description: Количество записей на страницу
+        - name: skip
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Количество записей для пропуска (offset)
+        - name: where
+          in: query
+          schema:
+            type: string
+          description: |
+            JSON-фильтр. Пример — организация по директору:
+            `{"director":{"__type":"Pointer","className":"_User","objectId":"sHqRk2a4il"}}`
+      responses:
+        '200':
+          description: Список организаций
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrganizationDto'
+
+    post:
+      tags: [Organizations]
+      summary: Создать организацию
+      operationId: createOrganization
+      description: |
+        Создаёт новую организацию и привязывает к ней директора.
+
+        **Обязательные поля:** name, director (Pointer на _User)
+
+        **Валидация:**
+        - Название организации не пустое
+        - Указан директор (directorId)
+
+        **Доступ:** organizator
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, director]
+              properties:
+                name:
+                  type: string
+                  example: "ТГУ Лаборатория ИИ"
+                aboutUs:
+                  type: string
+                  example: "Лаборатория искусственного интеллекта"
+                director:
+                  $ref: '#/components/schemas/ParsePointer'
+            example:
+              name: "ТГУ Лаборатория ИИ"
+              aboutUs: "Лаборатория искусственного интеллекта при ТГУ"
+              director:
+                __type: "Pointer"
+                className: "_User"
+                objectId: "sHqRk2a4il"
+      responses:
+        '201':
+          description: Организация создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  objectId:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+
+  /classes/Organization/{objectId}:
+    get:
+      tags: [Organizations]
+      summary: Получить организацию по ID
+      operationId: getOrganization
+      description: |
+        Возвращает данные организации по её ID.
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Данные организации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDto'
+
+    put:
+      tags: [Organizations]
+      summary: Обновить организацию
+      operationId: updateOrganization
+      description: |
+        Обновляет данные организации. Можно обновлять частично.
+
+        **Обновляемые поля:** name, aboutUs, director
+
+        **Доступ:** директор организации (organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Обновлённое название"
+                aboutUs:
+                  type: string
+                  example: "Новое описание организации"
+                director:
+                  $ref: '#/components/schemas/ParsePointer'
+      responses:
+        '200':
+          description: Организация обновлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedAt:
+                    type: string
+                    format: date-time
+
+    delete:
+      tags: [Organizations]
+      summary: Удалить организацию
+      operationId: deleteOrganization
+      description: |
+        Удаляет организацию по ID.
+
+        **Доступ:** директор организации (organizator)
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Организация удалена
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+
+  # ═══════════════════════════════════════════
+  # SKILLS
+  # ═══════════════════════════════════════════
+
+  /classes/Skills:
+    get:
+      tags: [Skills]
+      summary: Поиск навыков
+      operationId: searchSkills
+      description: |
+        Поиск навыков по подстроке в названии (регистронезависимый).
+        Используется при добавлении навыков к резюме или вакансии
+        (автодополнение в поле ввода).
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: where
+          in: query
+          required: true
+          schema:
+            type: string
+          description: |
+            JSON-фильтр с поиском по подстроке.
+            Пример: `{"name":{"$regex":"flut","$options":"i"}}`
+          example: '{"name":{"$regex":"flut","$options":"i"}}'
+      responses:
+        '200':
+          description: Список найденных навыков
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillDto'
+
+    post:
+      tags: [Skills]
+      summary: Создать навык
+      operationId: createSkill
+      description: |
+        Создаёт новый навык в справочнике. Устанавливает ACL.
+
+        **Доступ:** авторизованные пользователи
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Название навыка
+                  example: "Kotlin"
+                ACL:
+                  $ref: '#/components/schemas/ParseACL'
+      responses:
+        '201':
+          description: Навык создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillDto'
+
+  /classes/Skills/{objectId}:
+    put:
+      tags: [Skills]
+      summary: Обновить навык
+      operationId: updateSkill
+      description: |
+        Обновляет навык по ID.
+
+        **Доступ:** зависит от ACL навыка
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Kotlin Multiplatform"
+      responses:
+        '200':
+          description: Навык обновлён
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedAt:
+                    type: string
+                    format: date-time
+
+    delete:
+      tags: [Skills]
+      summary: Удалить навык
+      operationId: deleteSkill
+      description: |
+        Удаляет навык по ID.
+
+        **Доступ:** зависит от ACL навыка
+      parameters:
+        - $ref: '#/components/parameters/ParseAppId'
+        - $ref: '#/components/parameters/ParseClientKey'
+        - name: objectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Навык удалён
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
