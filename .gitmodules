@@ -1,0 +1,9 @@
+[submodule "users"]
+	path = users
+	url = https://github.com/DaniilSelin/tsuskills-user
+[submodule "dbmanager"]
+	path = dbmanager
+	url = https://github.com/DaniilSelin/tsuskills-dbmanager
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/Artvell3000/tsu_skills
