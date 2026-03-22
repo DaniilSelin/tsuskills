@@ -4,12 +4,12 @@
 [submodule "dbmanager"]
 	path = dbmanager
 	url = https://github.com/DaniilSelin/tsuskills-dbmanager
-[submodule "frontend"]
-	path = frontend
-	url = https://github.com/Artvell3000/tsu_skills
 [submodule "gateway"]
 	path = gateway
 	url = git@github.com:DaniilSelin/tsuskills-gateway.git
 [submodule "skills"]
 	path = skills
 	url = git@github.com:DaniilSelin/tsuskills-skills.git
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:DaniilSelin/tsuskills-frontend.git
