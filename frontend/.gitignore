@@ -1,0 +1,36 @@
+# Игнорировать папки зависимостей
+**/node_modules/
+**/.pub-cache/
+**/.packages
+**/.dart_tool/
+
+# Игнорировать директории сборки и окружения
+/build/
+/android/
+/ios/
+/web/
+/.idea/
+/.vscode/
+
+# Игнорировать файлы, сгенерированные build_runner
+**.g.dart
+**.freezed.dart
+**.gr.dart
+**/*.mocks.dart
+**/*.config.json
+/build/generated/
+/.dart_tool/build/
+
+# Игнорировать файлы окружения и личные настройки
+.env
+.env.local
+*.key
+*.pem
+
+# Игнорировать системные файлы
+.DS_Store
+Thumbs.db
+
+# Игнорировать лог-файлы
+*.log
+pubspec.lock
